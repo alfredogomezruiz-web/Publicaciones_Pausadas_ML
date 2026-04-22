@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 const TARGET_URL =
   process.env.ML_TARGET_URL ||
-  "https://www.mercadolibre.com.mx/publicaciones/lista";
+  "https://www.mercadolibre.com.mx/publicaciones/listado/space_management?filters=paused";
 
 function getStorageStatePath() {
   const localPath = path.join(__dirname, "storage.json");
@@ -33,11 +33,10 @@ async function openMercadoLibrePage(context) {
 
   await page.goto(TARGET_URL, {
     waitUntil: "domcontentloaded",
-    timeout: 60000
+    timeout: 30000
   });
 
-  await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
-  await page.waitForTimeout(8000);
+  await page.waitForTimeout(5000);
 
   return page;
 }
@@ -51,35 +50,30 @@ function looksLikeLoggedOut(text) {
   );
 }
 
+function looksLikeErrorPage(text) {
+  return (
+    text.includes("Hubo un error accediendo a esta pagina") ||
+    text.includes("Hubo un error accediendo a esta página") ||
+    text.includes("Ir a la pagina principal") ||
+    text.includes("Ir a la página principal")
+  );
+}
+
 async function getPageDiagnostics(page) {
-  const title = await page.title();
+  const title = await page.title().catch(() => "");
   const url = page.url();
   const bodyText = await page.locator("body").innerText().catch(() => "");
-  const bodyHtml = await page.locator("body").innerHTML().catch(() => "");
-
-  const pausedTextCount = (bodyText.match(/Pausada/g) || []).length;
-  const pausedHtmlCount = (bodyHtml.match(/Pausada/g) || []).length;
-
-  const hasGestion =
-    bodyText.includes("Gestion de publicaciones") ||
-    bodyHtml.includes("Gestion de publicaciones");
-
-  const hasModificarMasivo =
-    bodyText.includes("Modificar en Editor masivo") ||
-    bodyHtml.includes("Modificar en Editor masivo");
-
-  const hasNecesitoAyuda =
-    bodyText.includes("Necesito ayuda") ||
-    bodyHtml.includes("Necesito ayuda");
+  const pausedCount = (bodyText.match(/Pausada/g) || []).length;
+  const reactivaCount = (bodyText.match(/Reactiva el producto/g) || []).length;
 
   return {
     title,
     url,
-    pausedTextCount,
-    pausedHtmlCount,
-    hasGestion,
-    hasModificarMasivo,
-    hasNecesitoAyuda,
+    pausedCount,
+    reactivaCount,
+    hasControlStock: bodyText.includes("Control de stock"),
+    hasPausadasPorTi: bodyText.includes("Pausadas por ti"),
+    hasReactivaProducto: bodyText.includes("Reactiva el producto"),
     bodyPreview: bodyText.slice(0, 2000)
   };
 }
@@ -122,15 +116,20 @@ app.get("/health/mercadolibre", async (req, res) => {
       });
     }
 
-    const pausedCount = Math.max(
-      diagnostics.pausedTextCount,
-      diagnostics.pausedHtmlCount
-    );
-
-    if (pausedCount > 0) {
+    if (looksLikeErrorPage(diagnostics.bodyPreview)) {
       return res.status(500).json({
         ok: false,
-        pausedCount,
+        message: "Mercado Libre devolvio una pagina de error en vez del listado real",
+        diagnostics
+      });
+    }
+
+    const detectedCount = Math.max(diagnostics.reactivaCount, diagnostics.pausedCount);
+
+    if (detectedCount > 0) {
+      return res.status(500).json({
+        ok: false,
+        pausedCount: detectedCount,
         message: "Hay publicaciones pausadas",
         diagnostics
       });

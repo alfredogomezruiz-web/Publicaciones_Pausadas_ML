@@ -6,9 +6,8 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const TARGET_URL =
-  process.env.ML_TARGET_URL ||
-  "https://www.mercadolibre.com.mx/publicaciones/listado/space_management?filters=paused";
+const START_URL =
+  "https://www.mercadolibre.com.mx/publicaciones/listado";
 
 function getStorageStatePath() {
   const localPath = path.join(__dirname, "storage.json");
@@ -26,19 +25,6 @@ function getStorageStatePath() {
   const tempPath = path.join("/tmp", "ml-storage.json");
   fs.writeFileSync(tempPath, storageFromEnv, "utf8");
   return tempPath;
-}
-
-async function openMercadoLibrePage(context) {
-  const page = await context.newPage();
-
-  await page.goto(TARGET_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 30000
-  });
-
-  await page.waitForTimeout(5000);
-
-  return page;
 }
 
 function looksLikeLoggedOut(text) {
@@ -59,10 +45,63 @@ function looksLikeErrorPage(text) {
   );
 }
 
+async function clickByText(page, text, timeout = 10000) {
+  const locator = page.getByText(text, { exact: false }).first();
+  await locator.waitFor({ state: "visible", timeout });
+  await locator.click();
+}
+
+async function tryClickByText(page, text, timeout = 5000) {
+  try {
+    await clickByText(page, text, timeout);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function openPausedView(page) {
+  await page.goto(START_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 30000
+  });
+
+  await page.waitForTimeout(5000);
+
+  if (await tryClickByText(page, "Gestion de stock Full", 12000) === false) {
+    if (await tryClickByText(page, "Gestión de stock Full", 12000) === false) {
+      throw new Error("No se encontro la opcion Gestion de stock Full");
+    }
+  }
+
+  await page.waitForTimeout(4000);
+
+  if (await tryClickByText(page, "Filtrar", 10000) === false) {
+    throw new Error("No se encontro el boton Filtrar");
+  }
+
+  await page.waitForTimeout(2000);
+
+  if (await tryClickByText(page, "Pausadas por ti", 10000) === false) {
+    throw new Error("No se encontro el filtro Pausadas por ti");
+  }
+
+  await page.waitForTimeout(2000);
+
+  if (await tryClickByText(page, "Aplicar", 10000) === false) {
+    throw new Error("No se encontro el boton Aplicar");
+  }
+
+  await page.waitForTimeout(6000);
+
+  return page;
+}
+
 async function getPageDiagnostics(page) {
   const title = await page.title().catch(() => "");
   const url = page.url();
   const bodyText = await page.locator("body").innerText().catch(() => "");
+
   const pausedCount = (bodyText.match(/Pausada/g) || []).length;
   const reactivaCount = (bodyText.match(/Reactiva el producto/g) || []).length;
 
@@ -71,6 +110,9 @@ async function getPageDiagnostics(page) {
     url,
     pausedCount,
     reactivaCount,
+    hasGestionStockFull:
+      bodyText.includes("Gestion de stock Full") ||
+      bodyText.includes("Gestión de stock Full"),
     hasControlStock: bodyText.includes("Control de stock"),
     hasPausadasPorTi: bodyText.includes("Pausadas por ti"),
     hasReactivaProducto: bodyText.includes("Reactiva el producto"),
@@ -103,7 +145,9 @@ app.get("/health/mercadolibre", async (req, res) => {
       storageState: storageStatePath
     });
 
-    const page = await openMercadoLibrePage(context);
+    const page = await context.newPage();
+    await openPausedView(page);
+
     const diagnostics = await getPageDiagnostics(page);
 
     await browser.close();
@@ -124,7 +168,10 @@ app.get("/health/mercadolibre", async (req, res) => {
       });
     }
 
-    const detectedCount = Math.max(diagnostics.reactivaCount, diagnostics.pausedCount);
+    const detectedCount = Math.max(
+      diagnostics.reactivaCount,
+      diagnostics.pausedCount
+    );
 
     if (detectedCount > 0) {
       return res.status(500).json({
@@ -174,7 +221,9 @@ app.get("/debug/mercadolibre", async (req, res) => {
       storageState: storageStatePath
     });
 
-    const page = await openMercadoLibrePage(context);
+    const page = await context.newPage();
+    await openPausedView(page);
+
     const diagnostics = await getPageDiagnostics(page);
 
     await browser.close();
